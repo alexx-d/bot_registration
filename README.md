@@ -15,3 +15,6 @@
 * **Automation:** Selenium WebDriver
 * **Data:** Pandas, OpenPyXL
 * **Driver Management:** Webdriver-manager (автоматическая установка ChromeDriver)
+
+## Для создания автономного файла используйте PyInstaller:
+pyinstaller --noconsole --onefile main.py
