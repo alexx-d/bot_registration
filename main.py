@@ -24,7 +24,7 @@ class QuizBotGUI:
         self.row_map = {}
         
         self.root = root
-        self.root.title("AutoReg Quiz v1")
+        self.root.title("AutoReg Quiz v1.01")
         self.root.geometry("800x700")
         
         self.style = ttk.Style()
@@ -277,6 +277,20 @@ class QuizBotGUI:
             event.widget.icursor('end')
             return "break"
 
+    def safe_update_ui(self, processed, total, status_text, eta_text):
+        percent = int((processed / total) * 100)
+    
+        self.progress["value"] = processed
+        self.progress_label.config(text=f"Обработано: {processed} из {total} ({percent}%)")
+        self.status_var.set(status_text)
+        self.eta_label.config(text=eta_text)
+    
+        for item in self.tree.get_children():
+            if self.tree.item(item)['values'][0] == self.current_index + 1:
+                self.tree.selection_set(item)
+                self.tree.see(item)
+                break
+
     # --- ГЛАВНЫЙ БОТ ---
     def run_bot(self):
         self.btn_run.config(state="disabled", text="БОТ РАБОТАЕТ")
@@ -286,8 +300,20 @@ class QuizBotGUI:
             df_full = self.df
             if df_full is None: raise Exception("Файл не загружен или поврежден")
 
-            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
-            wait = WebDriverWait(driver, 20)
+            options = webdriver.ChromeOptions()
+            # options.add_argument("--headless=new") # Раскомментируйте для макс. скорости (без окна)
+            options.add_argument("--disable-gpu")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--blink-settings=imagesEnabled=false") # Отключаем картинки
+            options.add_argument('--log-level=3') # Меньше мусора в консоли
+
+            driver = webdriver.Chrome(
+                service=Service(ChromeDriverManager().install()), 
+                options=options
+            )
+            driver.set_page_load_timeout(30) 
+            wait = WebDriverWait(driver, 15)
 
             start_idx = int(self.start_from.get()) - 1
             work_df = df_full.iloc[start_idx:]
@@ -299,10 +325,10 @@ class QuizBotGUI:
             processed = 0
             
             for index, row in work_df.iterrows():
+                self.current_index = index
                 processed += 1
                 fio_current = str(row['ФИО обучающегося']).strip()
                 
-                # UI Обновление
                 self.progress["value"] = processed
                 percent = int((processed / total) * 100)
                 self.progress_label.config(text=f"Обработано: {processed} из {total} ({percent}%)")
@@ -340,11 +366,11 @@ class QuizBotGUI:
                 # 4. Школа
                 try:
                     org_in = self.safe_fill(wait, 'ОБУЧАЕТСЯ', row['Образовательная организация'])
-                    time.sleep(0.5)
+                    wait.until(lambda d: org_in.get_attribute("value") != "")
                     org_in.send_keys(Keys.ARROW_DOWN, Keys.ENTER)
                     
                     repr_in = self.safe_fill(wait, 'ПРЕДСТАВЛЯЕТ', 'ГБОУ "Воробьевы горы"')
-                    time.sleep(0.5)
+                    wait.until(lambda d: org_in.get_attribute("value") != "")
                     repr_in.send_keys(Keys.ARROW_DOWN, Keys.ENTER)
                 except: pass
 
@@ -358,7 +384,7 @@ class QuizBotGUI:
                     driver.execute_script("arguments[0].click();", cl_in)
                     cl_in.send_keys(Keys.CONTROL + "a", Keys.BACKSPACE)
                     for char in text_cl: cl_in.send_keys(char)
-                    time.sleep(0.5)
+                    wait.until(lambda d: org_in.get_attribute("value") != "")
                     cl_in.send_keys(Keys.ENTER)
                 except: pass
 
@@ -456,15 +482,17 @@ class QuizBotGUI:
                 self.safe_fill(wait, 'Email педагога', self.t_email.get())
                 driver.execute_script("arguments[0].click();", driver.find_elements(By.TAG_NAME, "button")[-1])
                 
-                time.sleep(3)
+                wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
 
-                # Таймер
+                # Рассчитываем время
                 elapsed = time.time() - start_time_all
                 avg = elapsed / processed
                 rem = int(avg * (total - processed))
-                self.eta_label.config(text=f"Осталось: ~{rem // 60:02d}:{rem % 60:02d}")
+                eta_str = f"Осталось: ~{rem // 60:02d}:{rem % 60:02d}"
+                status_str = f"Регистрируем: {fio_current}"
+
+                self.root.after(0, self.safe_update_ui, processed, total, status_str, eta_str)
                 
-                driver.refresh()
                 wait.until(EC.element_to_be_clickable((By.XPATH, "//button")))
 
             messagebox.showinfo("Готово", "Все ученики зарегистрированы!")
