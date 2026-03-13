@@ -20,6 +20,9 @@ SETTINGS_FILE = "settings.json"
 
 class QuizBotGUI:
     def __init__(self, root):
+        self.df = None
+        self.row_map = {}
+        
         self.root = root
         self.root.title("AutoReg Quiz v1")
         self.root.geometry("800x700")
@@ -165,34 +168,69 @@ class QuizBotGUI:
         fn = filedialog.askopenfilename(filetypes=[("Excel", "*.xlsx *.xls")])
         if fn: self.file_path.set(fn); self.load_table_data(fn)
 
-    def load_table_data(self, path):
-        try:
-            for item in self.tree.get_children(): self.tree.delete(item)
-            
-            df = pd.read_excel(path, skiprows=1)
-            
-            req = ["ФИО обучающегося", "Дата рождения", "СНИЛС", "ФИО заявителя", 
-                   "Контактный телефон", "e-mail", "Образовательная организация", "Группа/Класс"]
-            
-            if not all(c in df.columns for c in req):
-                raise ValueError("Неверные заголовки")
+    def format_snils(self, raw_value):
+        s = str(raw_value)
+        digits = "".join([c for c in s if c.isdigit()])
+    
+        if not digits:
+            return "-"
+        
+        return digits
 
-            df = df.dropna(subset=['ФИО обучающегося'])
-            for index, row in df.iterrows():
-                snils = str(row.get('СНИЛС', '-')).strip()
-                row_data = (index + 1, row.get('ФИО обучающегося', '-'), row.get('Дата рождения', '-'), 
-                            snils, row.get('Группа/Класс', '-'), row.get('Образовательная организация', '-'), 
-                            row.get('ФИО заявителя', '-'), row.get('Контактный телефон', '-'), row.get('e-mail', '-'))
-                self.tree.insert("", "end", values=row_data)
-            
-            self.status_var.set(f"Загружено записей: {len(df)}")
-            
-        except Exception as e:
-            msg = ("Внимание! В файле с данными заголовки таблицы должны начинаться со второй строки. "
-                   "Проверьте, что в таблице имеются столбцы:\n\n"
-                   "\"ФИО обучающегося\", \"Дата рождения\", \"СНИЛС\", \"ФИО заявителя\", "
-                   "\"Контактный телефон\", \"e-mail\", \"Образовательная организация\", \"Группа/Класс\"")
-            messagebox.showerror("Внимание", msg)
+    def load_table_data(self, path):
+        REQUIRED_COLUMNS = [
+            "ФИО обучающегося", "Дата рождения", "СНИЛС", 
+            "ФИО заявителя", "Контактный телефон", "e-mail", 
+            "Образовательная организация", "Группа/Класс"
+        ]
+
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        for i in range(11):
+            try:
+                df = pd.read_excel(path, header=i, dtype=str)
+
+                if "ФИО обучающегося" in df.columns:
+                    found_cols = df.columns.tolist()
+                    missing = [col for col in REQUIRED_COLUMNS if col not in found_cols]
+                    
+                    if missing:
+                        error_msg = "В таблице не найдены следующие колонки:\n\n" + \
+                                    "\n".join([f"• {m}" for m in missing]) + \
+                                    "\n\nПожалуйста, исправьте названия в Excel."
+                        messagebox.showerror("Ошибка заголовков", error_msg)
+                        return None
+                    
+                    df = df.dropna(subset=['ФИО обучающегося'])
+                    self.df = df
+
+                    for index, row in df.iterrows():
+                        raw_snils = row.get('СНИЛС', '-')
+                        clean_snils = self.format_snils(raw_snils)
+
+                        row_data = (
+                            index + 1, 
+                            str(row.get('ФИО обучающегося', '-')).strip(), 
+                            str(row.get('Дата рождения', '-')).strip(), 
+                            clean_snils, 
+                            str(row.get('Группа/Класс', '-')).strip(), 
+                            str(row.get('Образовательная организация', '-')).strip(), 
+                            str(row.get('ФИО заявителя', '-')).strip(), 
+                            str(row.get('Контактный телефон', '-')).strip(), 
+                            str(row.get('e-mail', '-')).strip()
+                        )
+                        item_id = self.tree.insert("", "end", values=row_data)
+                        self.row_map[index + 1] = item_id
+
+                    self.status_var.set(f"Загружено записей: {len(df)}")
+                    return df
+                
+            except Exception as e:
+                continue
+        
+        messagebox.showerror("Ошибка", "Не удалось найти заголовок 'ФИО обучающегося' в первых 10 строках файла.")
+        return None
 
     def start_thread(self):
         if not self.file_path.get(): return
@@ -224,7 +262,6 @@ class QuizBotGUI:
 
     def handle_control_hotkeys(self, event):
         char = event.char.lower()
-        
         # Проверяем именно символ (char), так как keycode может прыгать от раскладки
         if char == '\x03': # Ctrl + C
             event.widget.event_generate("<<Copy>>")
@@ -242,17 +279,16 @@ class QuizBotGUI:
 
     # --- ГЛАВНЫЙ БОТ ---
     def run_bot(self):
-        if not self.file_path.get():
-            return messagebox.showwarning("Внимание", "Выберите файл Excel!")
-        
         self.btn_run.config(state="disabled", text="БОТ РАБОТАЕТ")
         driver = None
         
         try:
-            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
-            wait = WebDriverWait(driver, 25)
+            df_full = self.df
+            if df_full is None: raise Exception("Файл не загружен или поврежден")
 
-            df_full = pd.read_excel(self.file_path.get(), skiprows=1).dropna(subset=['ФИО обучающегося'])
+            driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
+            wait = WebDriverWait(driver, 20)
+
             start_idx = int(self.start_from.get()) - 1
             work_df = df_full.iloc[start_idx:]
             
@@ -272,11 +308,10 @@ class QuizBotGUI:
                 self.progress_label.config(text=f"Обработано: {processed} из {total} ({percent}%)")
                 
                 # Визуальное выделение строки в таблице
-                for item in self.tree.get_children():
-                    if self.tree.item(item)['values'][0] == index + 1:
-                        self.tree.selection_set(item)
-                        self.tree.see(item) # Прокрутка к строке
-                        break
+                item = self.row_map.get(index + 1)
+                if item:
+                    self.tree.selection_set(item)
+                    self.tree.see(item)
                 
                 fio_current = str(row['ФИО обучающегося']).strip()
                 self.status_var.set(f"Регистрируем: {fio_current}")
